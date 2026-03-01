@@ -6,6 +6,9 @@ logger_name = "the_main_quest"
 base_data_path = "@jinja {{this.home_dir}}/Data/THE_MAIN_QUEST"
 loki_log_path = "@jinja {{this.base_data_path}}/logs/loki_the_main_quest.log"
 
+[ubuntu]
+loki_log_path = "/tmp/loki_the_main_quest.log"
+
 [default.todoist_snapshot]
 tasks_table = "todoist_tasks"
 snapshot_table = "todoist_daily_snapshot"

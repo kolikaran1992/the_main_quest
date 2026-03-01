@@ -10,9 +10,8 @@ import sys
 from datetime import date, datetime
 
 import pytz
-from pythonjsonlogger import jsonlogger
 
-from the_main_quest.omniconf import config
+from the_main_quest.omniconf import add_loki_handler, config
 from the_main_quest.omniconf import logger as _base_logger
 
 from .db import get_conn, insert_recurring_facts, insert_snapshot_facts, upsert_task_dimension
@@ -20,18 +19,11 @@ from .fetcher import fetch_active_tasks, fetch_completed_today, fetch_projects, 
 
 # ---------------------------------------------------------------------------
 # Loki logging setup
-# Must be done before any log calls so that all output lands in the right file.
-# We cannot use add_loki_handler() because it writes to ~/Data/... with a
-# project-name-derived filename; the Promtail catch-all requires /tmp/loki_*.log.
+# add_loki_handler writes to ~/Data/... on Mac (default env) and to
+# /tmp/loki_the_main_quest__todoist_snapshot.log on Ubuntu (ubuntu env),
+# keeping local test runs out of Loki while production runs are ingested.
 # ---------------------------------------------------------------------------
-_LOKI_PATH = "/tmp/loki_todoist_snapshot.log"
-
-_file_handler = logging.FileHandler(_LOKI_PATH)
-_file_handler.setLevel(logging.INFO)
-_file_handler.setFormatter(
-    jsonlogger.JsonFormatter("%(asctime)s %(levelname)s %(name)s %(message)s")
-)
-_base_logger.addHandler(_file_handler)
+add_loki_handler("todoist_snapshot")
 
 log = logging.LoggerAdapter(_base_logger, {"project": "todoist_snapshot"})
 

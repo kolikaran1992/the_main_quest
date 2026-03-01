@@ -86,20 +86,22 @@ Table names are config-driven — never hardcode SQL table names in Python.
 
 ## Loki logging
 
-**For the nightly cron and any new jobs:** do NOT use `add_loki_handler()`. Instead attach a direct `FileHandler` to `/tmp/loki_<jobname>.log` with `JsonFormatter` and wrap the logger in `LoggerAdapter({"project": "<name>"})`. The Promtail catch-all picks up all `/tmp/loki_*.log` files automatically.
+Use `add_loki_handler(suffix)` for all jobs. The log path is environment-driven:
+
+| Env | `loki_log_path` | Result |
+|---|---|---|
+| `default` (Mac) | `~/Data/THE_MAIN_QUEST/logs/` | Local file, Promtail ignores it — test runs stay out of Loki |
+| `ubuntu` | `/tmp/` | `/tmp/loki_the_main_quest__<suffix>.log` — picked up by Promtail catch-all |
 
 ```python
 import logging
-from pythonjsonlogger import jsonlogger
-from the_main_quest.omniconf import logger
+from the_main_quest.omniconf import add_loki_handler, logger as _base_logger
 
-_fh = logging.FileHandler("/tmp/loki_myjob.log")
-_fh.setFormatter(jsonlogger.JsonFormatter("%(asctime)s %(levelname)s %(message)s"))
-logger.addHandler(_fh)
-log = logging.LoggerAdapter(logger, {"project": "myjob"})
+add_loki_handler("myjob")
+log = logging.LoggerAdapter(_base_logger, {"project": "myjob"})
 ```
 
-**`add_loki_handler()`** is for general/interactive use only — it writes to `~/Data/THE_MAIN_QUEST/logs/` with a filename that Promtail's catch-all does not pick up.
+Query in Grafana: `{job="loki", project="myjob"} | json`
 
 Loki rejects log entries older than 7 days. Never write historical timestamps to log lines.
 
