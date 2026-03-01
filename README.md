@@ -1,3 +1,24 @@
 # the_main_quest
 
-Generated Python project managed by Poetry.
+Personal data pipeline and analytics project. Snapshots Todoist tasks into Postgres nightly; feeds Grafana dashboards for habit tracking, completion rates, and overdue task analysis.
+
+## Navigation for LLMs
+
+| What you need | Where to look |
+|---|---|
+| Extend or modify the project | `the_main_quest/agent.md` — config, logging, DB layer, adding pipelines |
+| Todoist API field shapes | `knowledge_bank/todoist_api_exploration.md` |
+| Snapshot schema design and dashboard queries | `knowledge_bank/todoist_snapshot_basic.md` |
+| DB schema (run once) | `migrations/todoist_snapshot_schema.sql` |
+
+## Quick start
+
+```bash
+poetry install
+
+# Nightly snapshot (test DB by default)
+poetry run python -m the_main_quest.todoist_snapshot.main
+
+# Print pending tasks (used by OpenCode skill)
+poetry run python -m runs.fetch_pending_tasks
+```
