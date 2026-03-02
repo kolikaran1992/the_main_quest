@@ -12,9 +12,11 @@ the_main_quest/
 ├── opencode.json                         # Project-level OpenCode config
 ├── migrations/
 │   └── todoist_snapshot_schema.sql       # Run once via runs/setup_postgres.py
-├── runs/                                 # One-off and utility scripts
+├── runs/                                 # Cron and utility entry points
 │   ├── setup_postgres.py                 # Creates role, DBs, applies schema
-│   └── fetch_pending_tasks.py            # Prints non-recurring pending tasks (stdout)
+│   ├── fetch_pending_tasks.py            # Prints non-recurring pending tasks (stdout)
+│   ├── todoist_snapshot_regular.py       # Cron entry: non-recurring snapshot pipeline
+│   └── todoist_snapshot_recurring.py     # Cron entry: recurring snapshot pipeline
 ├── tests/
 │   └── todoist_fetch/
 │       ├── test_fetcher.py               # Real-API integration tests
@@ -31,7 +33,9 @@ the_main_quest/
     └── todoist_snapshot/
         ├── fetcher.py                   # Todoist REST API layer
         ├── db.py                        # Postgres layer (SCD Type 2, fact inserts)
-        └── main.py                      # Orchestrator — this is the nightly cron entry
+        ├── _helpers.py                  # Shared parse/build helpers
+        ├── regular.py                   # Non-recurring snapshot pipeline (run())
+        └── recurring.py                 # Recurring snapshot pipeline (run())
 ```
 
 ---
@@ -114,7 +118,7 @@ Loki rejects log entries older than 7 days. Never write historical timestamps to
 3. Add secrets (if any) to the secrets TOML template and document in `postgres.toml.template`
 4. Add a Loki-compatible `FileHandler` as shown above
 5. Add tests under `tests/<name>/`
-6. Add a cron entry on `limited_user@192.168.1.50` pointing at `python -m the_main_quest.<name>.main`
+6. Add a cron entry on `limited_user@192.168.1.50` pointing at `python -m runs.<name>`
 
 ---
 
@@ -124,8 +128,11 @@ Loki rejects log entries older than 7 days. Never write historical timestamps to
 # One-time DB setup (run as admin, reads from [admin.postgres] in secrets TOML)
 poetry run python -m runs.setup_postgres
 
-# Nightly snapshot (runs locally against test DB by default)
-poetry run python -m the_main_quest.todoist_snapshot.main
+# Non-recurring snapshot (runs frequently, e.g. hourly)
+poetry run python -m runs.todoist_snapshot_regular
+
+# Recurring snapshot (runs nightly at 23:55)
+poetry run python -m runs.todoist_snapshot_recurring
 
 # Print pending non-recurring tasks (used by OpenCode pending-tasks skill)
 poetry run python -m runs.fetch_pending_tasks

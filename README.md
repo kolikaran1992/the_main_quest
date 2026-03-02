@@ -16,8 +16,11 @@ Personal data pipeline and analytics project. Snapshots Todoist tasks into Postg
 ```bash
 poetry install
 
-# Nightly snapshot (test DB by default)
-poetry run python -m the_main_quest.todoist_snapshot.main
+# Non-recurring snapshot (test DB by default)
+poetry run python -m runs.todoist_snapshot_regular
+
+# Recurring snapshot (test DB by default)
+poetry run python -m runs.todoist_snapshot_recurring
 
 # Print pending tasks (used by OpenCode skill)
 poetry run python -m runs.fetch_pending_tasks
