@@ -255,44 +255,56 @@ CREATE TABLE IF NOT EXISTS sp_time_log (
 
 ## Pipeline design
 
-### Entry points (in `runs/`)
+### Single nightly run — why
+
+SP's "Finish Day" is the natural commit point for a day's work. After Finish Day:
+- `archive.json` has every completed task (recurring + non-recurring + subtasks) with `doneOn`
+- `main.json` has every still-active task with current dimension state
+
+A single pipeline run after Finish Day reads both files and has the complete picture.
+`ON CONFLICT DO NOTHING` is correct here — one write per day, no mid-day stale-row problem.
+
+Unlike the Todoist pipeline (hourly regular + nightly recurring), SP needs **one cron entry**:
 
 ```
-runs/sp_snapshot_regular.py     ← non-recurring pipeline
-runs/sp_snapshot_recurring.py   ← recurring pipeline
+# Daily at 00:05am IST (18:35 UTC) — after Finish Day
+35 18 * * * SECRETS_DIRECTORY=... ENV_FOR_DYNACONF=ubuntu poetry -C .../the_main_quest run python -m runs.sp_snapshot
+```
+
+Run at 00:05am to give until midnight to run Finish Day. If Finish Day was skipped,
+`main.json` still has `isDone: true` tasks — the pipeline reads both files so nothing is lost.
+
+### Entry point (in `runs/`)
+
+```
+runs/sp_snapshot.py     ← single daily pipeline (handles both regular and recurring)
 ```
 
 ### Pipeline modules (in `the_main_quest/sp_snapshot/`)
 
 ```
 the_main_quest/sp_snapshot/
-├── reader.py       — reads + merges main.json and archive.json, resolves tag/project names
-├── _helpers.py     — parse doneOn (Unix ms → datetime), timeSpentOnDay, priority from tags
-├── regular.py      — run() for non-recurring pipeline
-├── recurring.py    — run() for recurring pipeline
-└── db.py           — Postgres layer (SCD Type 2 + fact inserts for SP tables)
+├── reader.py    — reads main.json + archive.json, resolves tag/project/repeatCfg lookups
+├── _helpers.py  — parse doneOn (Unix ms → datetime), timeSpentOnDay, priority from tags
+├── regular.py   — run() for non-recurring tasks (dimensions + facts)
+├── recurring.py — run() for recurring tasks (dimensions + facts)
+└── db.py        — Postgres layer (SCD Type 2 + fact inserts for SP tables)
 ```
 
 ### `reader.py` responsibilities
 1. Read the SP backup JSON from the WebDAV data path (verify exact filename after first sync)
-2. Merge active tasks from `main.json` + `isDone: true` tasks + archived tasks from `archive.json`
+2. Collect all tasks: active from `main.json` + `isDone: true` from `main.json` + archived from `archive.json`
 3. Build lookup dicts: `projects: {id → name}`, `tags: {id → name}`, `repeatCfgs: {id → config}`
 4. Log a warning if file `last_modified` is older than 2 hours (stale sync detection)
 
-### Cron schedule (on `limited_user@karan_ubuntu`)
+### Subtask handling
+Each subtask has its own `task_id` and `parentId` pointing to the parent.
+Subtasks appear as independent rows in dimension and fact tables, linked by `parentId`.
+New subtasks created mid-day: first seen by the pipeline that night, SCD Type 2 inserts them as new.
 
+### Loki log file
 ```
-# SP non-recurring snapshot — every hour
-0 * * * * SECRETS_DIRECTORY=... ENV_FOR_DYNACONF=ubuntu poetry -C .../the_main_quest run python -m runs.sp_snapshot_regular
-
-# SP recurring snapshot — nightly at 23:55 IST (18:25 UTC)
-25 18 * * * SECRETS_DIRECTORY=... ENV_FOR_DYNACONF=ubuntu poetry -C .../the_main_quest run python -m runs.sp_snapshot_recurring
-```
-
-### Loki log files
-```
-/tmp/loki_the_main_quest__sp_snapshot_regular.log
-/tmp/loki_the_main_quest__sp_snapshot_recurring.log
+/tmp/loki_the_main_quest__sp_snapshot.log
 ```
 
 ---
