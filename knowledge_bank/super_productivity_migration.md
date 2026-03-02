@@ -255,24 +255,61 @@ CREATE TABLE IF NOT EXISTS sp_time_log (
 
 ## Pipeline design
 
-### Single nightly run — why
+### Event-driven trigger — why not a fixed cron
 
-SP's "Finish Day" is the natural commit point for a day's work. After Finish Day:
-- `archive.json` has every completed task (recurring + non-recurring + subtasks) with `doneOn`
-- `main.json` has every still-active task with current dimension state
+A fixed nightly cron (e.g. 00:05am) breaks on extended work days — if you run Finish Day at
+1:30am, the pipeline already fired without that data and the next night's run would mis-date it.
 
-A single pipeline run after Finish Day reads both files and has the complete picture.
-`ON CONFLICT DO NOTHING` is correct here — one write per day, no mid-day stale-row problem.
+Instead the pipeline is **triggered by Finish Day itself**: when you click Finish Day, SP syncs
+to WebDAV, writing the data file on disk. A watcher on `karan_ubuntu` detects this and fires
+the pipeline. No fixed time, no continuity gaps.
 
-Unlike the Todoist pipeline (hourly regular + nightly recurring), SP needs **one cron entry**:
+**Trigger mechanism: `inotifywait` + systemd service**
 
+A systemd service on `karan_ubuntu` (runs as `limited_user`) watches the WebDAV data directory:
+
+```bash
+# /etc/systemd/system/sp_snapshot_watcher.service
+[Unit]
+Description=Super Productivity snapshot watcher
+After=network.target
+
+[Service]
+User=limited_user
+ExecStart=/home/limited_user/bin/sp_snapshot_watcher.sh
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
 ```
-# Daily at 00:05am IST (18:35 UTC) — after Finish Day
-35 18 * * * SECRETS_DIRECTORY=... ENV_FOR_DYNACONF=ubuntu poetry -C .../the_main_quest run python -m runs.sp_snapshot
+
+```bash
+# /home/limited_user/bin/sp_snapshot_watcher.sh
+#!/bin/bash
+WATCH_DIR="/mnt/seagate_hdd1/super_productivity/webdav/data"
+DEBOUNCE=180  # seconds — wait for WebDAV sync to fully settle
+
+inotifywait -m -e close_write --format '%f' "$WATCH_DIR" | while read filename; do
+    sleep $DEBOUNCE
+    SECRETS_DIRECTORY=/home/limited_user/dev_secrets \
+    ENV_FOR_DYNACONF=ubuntu \
+    /home/limited_user/.local/bin/poetry -C /home/limited_user/Projects/the_main_quest \
+        run python -m runs.sp_snapshot
+done
 ```
 
-Run at 00:05am to give until midnight to run Finish Day. If Finish Day was skipped,
-`main.json` still has `isDone: true` tasks — the pipeline reads both files so nothing is lost.
+The 3-minute debounce absorbs multiple close_write events during a single WebDAV sync.
+`ON CONFLICT DO NOTHING` ensures a double-trigger on the same day is a safe no-op.
+
+**Behaviour by scenario:**
+
+| Scenario | Outcome |
+|---|---|
+| Normal day, Finish Day at 11pm | Triggers at 11:03pm — correct |
+| Extended day, Finish Day at 1:30am | Triggers at 1:33am — correct, dates derived from `doneOn` |
+| Finish Day not run | Pipeline never fires — no empty rows, Grafana shows gap = no work |
+| Finish Day run twice same day | Second trigger is a no-op via `ON CONFLICT DO NOTHING` |
+| Multi-day gap (holiday) | No triggers — Grafana handles missing days as gaps |
 
 ### Entry point (in `runs/`)
 
@@ -290,6 +327,30 @@ the_main_quest/sp_snapshot/
 ├── recurring.py — run() for recurring tasks (dimensions + facts)
 └── db.py        — Postgres layer (SCD Type 2 + fact inserts for SP tables)
 ```
+
+### Date derivation — `doneOn` per task, not pipeline run time
+
+Pipeline run time is irrelevant to what date a task belongs to. Instead:
+
+```python
+DAY_BOUNDARY_HOUR = config.sp_snapshot.day_boundary_hour  # default: 4
+
+def work_date(done_on_ts: datetime) -> date:
+    """Return the work date a completion belongs to.
+    Anything before DAY_BOUNDARY_HOUR is attributed to the previous calendar day
+    so that extended days past midnight are logged correctly.
+    """
+    if done_on_ts.hour < DAY_BOUNDARY_HOUR:
+        return (done_on_ts - timedelta(days=1)).date()
+    return done_on_ts.date()
+```
+
+- Task completed at 11:45pm March 2nd → `log_date = 2026-03-02` ✓
+- Task completed at 1:30am March 3rd → `log_date = 2026-03-02` ✓ (boundary = 4am)
+- Task completed at 5:00am March 3rd → `log_date = 2026-03-03` ✓
+
+For **active tasks** (not completed, no `doneOn`): use the pipeline trigger timestamp
+with the same `work_date()` logic as the reference date for `snapshot_date`.
 
 ### `reader.py` responsibilities
 1. Read the SP backup JSON from the WebDAV data path (verify exact filename after first sync)
@@ -314,8 +375,10 @@ New subtasks created mid-day: first seen by the pipeline that night, SCD Type 2 
 | Failure | Impact | Handling |
 |---|---|---|
 | App not opened for a day | Recurring instances not created — no data for that day | Grafana SQLs handle gaps (missing day = no activity, not an error) |
-| Finish Day not run | Completions in `main.json` not yet in `archive.json` | Pipeline reads both files — always visible |
-| WebDAV sync stale | Pipeline reads old data | Log warning if file `last_modified` > 2h; `snapshotted_at` in Grafana reveals it |
+| Finish Day not run | Pipeline never fires — no rows written for that day | Read both files as safety net; gap in Grafana signals missed Finish Day |
+| Extended day past midnight | Tasks mis-dated if using run time | `work_date()` uses `doneOn` per task + `day_boundary_hour` — always correct |
+| inotifywait watcher dies | Pipeline stops triggering | systemd `Restart=always` auto-recovers; check `systemctl status sp_snapshot_watcher` |
+| WebDAV sync not settled (double close_write) | Pipeline fires mid-sync on partial data | 3-minute debounce + `DO NOTHING` idempotency makes second trigger a safe no-op |
 | Sync conflict (two clients simultaneous) | Last-write-wins — minor data loss possible | Low probability with two clients; no programmatic fix |
 | Browser cache cleared | Data loss if unsynced | Use Mac desktop app as primary, not browser |
 
@@ -341,7 +404,8 @@ New subtasks created mid-day: first seen by the pipeline that night, SCD Type 2 
 
 **If something looks wrong in Grafana**
 - Check that WebDAV sync ran: `ls -la /mnt/seagate_hdd1/super_productivity/webdav/data/`
-- Check pipeline logs: `tail /tmp/loki_the_main_quest__sp_snapshot_regular.log`
+- Check watcher service: `systemctl status sp_snapshot_watcher`
+- Check pipeline logs: `tail /tmp/loki_the_main_quest__sp_snapshot.log`
 
 ---
 
@@ -356,6 +420,7 @@ recurring_tasks_table = "sp_recurring_tasks"
 recurring_log_table = "sp_recurring_log"
 time_log_table = "sp_time_log"
 webdav_data_path = "@jinja {{this.home_dir}}/Data/SP_MOCK/"   # Mac dev: mock data
+day_boundary_hour = 4   # completions before 4am count as previous calendar day
 
 [ubuntu.sp_snapshot]
 webdav_data_path = "/mnt/seagate_hdd1/super_productivity/webdav/data/"
@@ -368,3 +433,5 @@ webdav_data_path = "/mnt/seagate_hdd1/super_productivity/webdav/data/"
 1. **Exact filename** SP writes to WebDAV — verify after first sync (likely `super-productivity-backup.json` but confirm on disk)
 2. **WebDAV credentials** — decide before running the `docker run` command
 3. **SP version pinning** — pin the Docker image to a specific version tag to avoid breaking schema changes on auto-update
+4. **`day_boundary_hour`** — confirm 4am cutoff works for your schedule or adjust
+5. **inotifywait availability** — confirm `inotify-tools` is installed on `karan_ubuntu` (`apt install inotify-tools`)
