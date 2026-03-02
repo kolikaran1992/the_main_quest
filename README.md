@@ -11,6 +11,15 @@ Personal data pipeline and analytics project. Snapshots Todoist tasks into Postg
 | Snapshot schema design and dashboard queries | `knowledge_bank/todoist_snapshot_basic.md` |
 | DB schema (run once) | `migrations/todoist_snapshot_schema.sql` |
 
+## Loki log paths (ubuntu)
+
+| Job | Log file |
+|---|---|
+| Non-recurring snapshot | `/tmp/loki_the_main_quest__todoist_snapshot_regular.log` |
+| Recurring snapshot | `/tmp/loki_the_main_quest__todoist_snapshot_recurring.log` |
+
+Query in Grafana: `{job="loki", project="todoist_snapshot_regular"} | json`
+
 ## Quick start
 
 ```bash
