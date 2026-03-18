@@ -370,6 +370,72 @@ def repeat_days(cfg: dict) -> list[str]:
 
 ---
 
+## Counter tasks — habits with variable count
+
+A convention-based approach to habit tracking that keeps tag grouping intact.
+SP's native habit system (`simpleCounter`) has no tag support; this pattern uses
+recurring tasks + manual subtasks instead.
+
+### Convention
+
+- Any recurring task tagged `counter_tasks` is treated as a counter habit by the pipeline
+- The user manually adds subtasks to each daily instance — one subtask per repetition
+- Subtasks are **never** added via `subTaskTemplates` — this is intentional, not a gap
+- The parent task is marked done at end of day; subtasks are marked done at the time of each repetition
+
+### What the data shows
+
+```
+Parent task (counter habit):
+  isDone: true
+  doneOn: 1773858517512        ← Unix ms — used by pipeline for work_date()
+  tagIds: ["n6TT_1aaUFJs52972nAp4"]  ← includes "counter_tasks" tag
+  subTaskIds: ["9PfOGzlrF_I0DjAI4m7jL"]
+
+Subtask (one repetition):
+  isDone: false / true          ← true = this repetition was done
+  tagIds: []                    ← subtasks carry NO tags
+  parentId: "e3EQsKRqlYnRBKQAg5FgK"  ← always points to parent
+  projectId: "ln4l1bbCXsSmiPDKAdTgT" ← same project as parent
+  doneOn: (unconfirmed — verify by completing a subtask)
+```
+
+**Confirmed:** marking the parent done does NOT auto-complete subtasks — they stay
+independent. This is required for the count to be meaningful.
+
+### Pipeline logic for counter tasks
+
+```python
+COUNTER_TAG = "counter_tasks"
+
+def is_counter_task(task: dict, tag_entities: dict) -> bool:
+    return any(
+        tag_entities.get(tid, {}).get("title") == COUNTER_TAG
+        for tid in task.get("tagIds", [])
+    )
+
+def counter_task_count(task: dict, all_tasks: dict) -> int:
+    """Number of completed repetitions for this counter task instance."""
+    return sum(
+        1 for sid in task.get("subTaskIds", [])
+        if all_tasks.get(sid, {}).get("isDone") is True
+    )
+```
+
+Date for a counter task instance = `work_date(task["doneOn"])` on the parent, same
+as all other completed tasks.
+
+Tag path resolved via parent `tagIds` — subtask tags are always empty.
+
+### Subtask `doneOn` — unconfirmed
+
+No subtask has been completed individually yet. Whether completed subtasks carry
+their own `doneOn` is unknown. For basic count this is irrelevant — `isDone: true`
+is sufficient. If per-repetition timestamps are ever needed, verify by completing
+a subtask without completing the parent.
+
+---
+
 ## Open questions (verify when archive.json first appears)
 
 1. Does `archive.json` use the same `pf_2__` prefix?
