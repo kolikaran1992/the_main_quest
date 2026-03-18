@@ -144,6 +144,30 @@ truth** — do not rely on the reverse indexes, they may be stale.
 | `lastTaskCreationDay` | string | "YYYY-MM-DD" of the last generated instance |
 | `quickSetting` | string | `"DAILY"` \| `"WEEKLY"` \| `"CUSTOM"` — UI shortcut used |
 
+### Recurring instance ID format
+
+New recurring instances use a predictable ID: `rpt_<repeatCfgId>_<YYYY-MM-DD>`
+
+```
+"id": "rpt_jEKP9Us0BmQamtysD0i2-_2026-03-19"
+       ───  ──────────────────────  ──────────
+       prefix   repeatCfgId           date
+```
+
+This is more reliable than parsing `dueDay` for date attribution — the date is
+baked directly into the ID and survives any subsequent `dueDay` modifications.
+
+```python
+def recurring_instance_date(task_id: str) -> date | None:
+    """Extract the scheduled date from a recurring instance ID, or None if not recurring."""
+    if task_id.startswith("rpt_"):
+        return date.fromisoformat(task_id.rsplit("_", 1)[-1])
+    return None
+```
+
+Note: manually created tasks use random 21-char nanoid IDs and do NOT follow this
+pattern — `recurring_instance_date()` returns None for them.
+
 ### Important: instance creation requires the app to be open
 
 SP generates recurring instances **only when the app is opened on any device**.
@@ -427,12 +451,23 @@ as all other completed tasks.
 
 Tag path resolved via parent `tagIds` — subtask tags are always empty.
 
-### Subtask `doneOn` — unconfirmed
+### Subtask `doneOn` — confirmed
 
-No subtask has been completed individually yet. Whether completed subtasks carry
-their own `doneOn` is unknown. For basic count this is irrelevant — `isDone: true`
-is sufficient. If per-repetition timestamps are ever needed, verify by completing
-a subtask without completing the parent.
+Completing a subtask individually sets `doneOn` (Unix ms, equals `modified` at
+completion time) — same pattern as parent tasks. ✓
+
+SP also stamps `dueDay` onto the subtask at completion time (set to the calendar
+date of completion). Use `doneOn` + `work_date()` for date attribution, not `dueDay`
+— `doneOn` is the precise timestamp; `dueDay` is a derived date with no time component.
+
+```
+Completed subtask:
+  isDone:   true
+  doneOn:   1773858725695   ← Unix ms — use this for work_date()
+  dueDay:   "2026-03-19"   ← stamped by SP at completion, no time precision
+  tagIds:   []              ← always empty; resolve tags via parentId
+  parentId: "e3EQsKRqlYnRBKQAg5FgK"
+```
 
 ---
 
