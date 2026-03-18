@@ -232,22 +232,68 @@ Tag folder membership is in `menuTree.tagTree` — not in the tag entity itself.
 | `"p"` | Project reference | `id` only |
 | `"t"` | Tag reference | `id` only |
 
-### Building lookup dicts in reader.py
+### Tag paths — full ancestor chain per tag
+
+Tag folder names are treated as implicit category labels in dashboards.
+A task tagged "Mental Health" (which lives under the "Health" folder) implicitly
+belongs to both "Health" and "Mental Health" — the pipeline exposes the full path.
+
+The tree supports arbitrary nesting depth (folders inside folders). Whether SP's UI
+enforces a max depth is unconfirmed — the walker below handles any depth correctly.
+
+**Floating tags** (tags not placed in any folder) are supported — their path is just
+`[tag_name]` with no ancestors.
 
 ```python
-# project_id -> folder_name
-project_folder: dict[str, str] = {}
+def build_tag_paths(
+    tag_tree: list,
+    tag_entities: dict,
+) -> dict[str, list[str]]:
+    """
+    Returns tag_id -> [ancestor_folder_names..., tag_name].
+
+    Examples:
+      "Mental Health" under "Health" folder  -> ["Health", "Mental Health"]
+      "Urgent" with no folder                -> ["Urgent"]
+    """
+    result: dict[str, list[str]] = {}
+
+    def walk(nodes: list, ancestors: list[str]) -> None:
+        for node in nodes:
+            if node["k"] == "f":
+                walk(node.get("children", []), ancestors + [node["name"]])
+            elif node["k"] == "t":
+                tag_name = tag_entities[node["id"]]["title"]
+                result[node["id"]] = ancestors + [tag_name]
+
+    walk(tag_tree, [])
+
+    # Floating tags — present in tag_entities but not referenced in the tree
+    for tag_id, tag in tag_entities.items():
+        if tag_id not in result:
+            result[tag_id] = [tag["title"]]
+
+    return result
+```
+
+Usage in reader.py:
+```python
+tag_paths = build_tag_paths(
+    state["menuTree"]["tagTree"],
+    state["tag"]["entities"],
+)
+# For a task: tag_paths[task["tagIds"][0]] -> ["Health", "Mental Health"]
+```
+
+### Project folder lookup (single level confirmed)
+
+```python
+# project_id -> folder_name (or None if not in any folder)
+project_folder: dict[str, str | None] = {}
 for node in state["menuTree"]["projectTree"]:
     if node["k"] == "f":
         for child in node["children"]:
             project_folder[child["id"]] = node["name"]
-
-# tag_id -> folder_name
-tag_folder: dict[str, str] = {}
-for node in state["menuTree"]["tagTree"]:
-    if node["k"] == "f":
-        for child in node["children"]:
-            tag_folder[child["id"]] = node["name"]
 ```
 
 ---
